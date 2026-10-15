@@ -1,0 +1,87 @@
+name: main-redis
+
+services:
+  redis:
+    image: ${REDIS_IMAGE:?REDIS_IMAGE must be pinned by digest}
+    platform: linux/amd64
+    user: "999:999"
+
+    entrypoint:
+      - /usr/local/bin/redis-server
+
+    command:
+      - /usr/local/etc/redis/redis.conf
+
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+    read_only: true
+
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    pids_limit: 256
+
+    # Redis komutları büyük ölçüde tek çekirdekte işler; sunucunun geri kalanını korur
+    cpus: ${REDIS_CPUS:-2}
+
+    # redis.conf içindeki maxmemory bu limitin altında kalmalı (fork/COW payı için)
+    mem_limit: ${REDIS_MEM_LIMIT:-3g}
+    mem_reservation: ${REDIS_MEM_RESERVATION:-2g}
+    memswap_limit: ${REDIS_MEM_LIMIT:-3g}
+
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    working_dir: /data
+
+    tmpfs:
+      - /tmp:size=64m,mode=1777,nosuid,nodev,noexec
+
+    ports:
+      - name: redis-tls
+        target: 6379
+        published: "${REDIS_PUBLISHED_PORT:-6379}"
+        host_ip: ${REDIS_BIND_IP:?REDIS_BIND_IP must be set}
+        protocol: tcp
+
+    volumes:
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./config/users.acl:/usr/local/etc/redis/users.acl:ro
+      - ./data:/data:rw
+      - ./tls:/tls:ro
+      - ./secrets/healthcheck_password:/run/secrets/healthcheck_password:ro
+      - ./bin/healthcheck.sh:/usr/local/bin/redis-healthcheck:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/redis-healthcheck
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # Docker varsayılanı json-file + sınırsız; loglar diski doldurmasın
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    networks:
+      - redis_backend
+
+    labels:
+      com.diyanet.environment: ${ENVIRONMENT:-production}
+      com.diyanet.application: main-redis
+      com.diyanet.role: redis-cache
+
+networks:
+  redis_backend:
+    driver: bridge

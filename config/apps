@@ -1,0 +1,2 @@
+# Redis'e bağlanan uygulamalar: satır başına bir isim.
+# Elle düzenlemeyin; ./app.sh add|remove <isim> kullanın.

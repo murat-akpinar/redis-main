@@ -1,0 +1,16 @@
+# Gerçek dosya: config/users.acl (git'e girmez). bin/init-secrets.sh ile üretilir.
+# Hash: echo -n 'PAROLA' | sha256sum
+#
+# default kullanıcı kapalı — tüm bağlantılar isimli kullanıcı ile AUTH olmalı.
+user default off resetkeys resetchannels -@all
+
+# Uygulama kullanıcıları (./app.sh add <isim>, config/apps): yalnızca kendi prefix'i,
+# tehlikeli komutlar (FLUSHALL, CONFIG, KEYS, DEBUG vb.) kapalı
+user app1 on #REPLACE_WITH_SHA256 resetkeys resetchannels ~app1:* &app1:* +@all -@dangerous -scan -randomkey -pubsub -function -script|flush -script|kill
+user app2 on #REPLACE_WITH_SHA256 resetkeys resetchannels ~app2:* &app2:* +@all -@dangerous -scan -randomkey -pubsub -function -script|flush -script|kill
+
+# Yönetici kullanıcısı
+user admin on #REPLACE_WITH_SHA256 ~* &* +@all
+
+# Healthcheck: yalnızca PING
+user healthcheck on #REPLACE_WITH_SHA256 resetkeys resetchannels -@all +ping

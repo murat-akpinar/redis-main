@@ -1,0 +1,10 @@
+.env
+.lock
+pki/
+config/users.acl
+secrets/*
+!secrets/.gitkeep
+tls/*
+!tls/.gitkeep
+data/*
+!data/.gitkeep
