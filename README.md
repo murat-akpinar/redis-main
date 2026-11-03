@@ -461,6 +461,9 @@ sudo iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEP
 - **Veri:** `data/` 0700; AOF/RDB şifresiz tutulur. Cache'e hassas veri yazılıyorsa diski ve yedekleri buna göre koruyun.
 - **Ağ:** 6379'a yalnızca uygulama sunucularından / LB'den izin verin. Docker'ın açtığı portlar
   ufw/firewalld INPUT kurallarını **atlar**; kural `DOCKER-USER` zincirine yazılmalıdır (bkz. "Firewall").
+  Firewall yoksa porta erişen herkes, parola bilmeden ~10k boş TCP bağlantısı açıp `maxclients`'ı
+  doldurarak tüm uygulamaları dışarıda bırakabilir. `timeout 300` bu bağlantıları 5 dk içinde
+  kapatır ama bağlantıları sürekli yenileyen bir saldırıyı durduramaz.
 - **docker grubu** root yetkisine eşdeğerdir; bu sunucuda docker grubundaki herkes parolalara ve veriye erişebilir
   (`new-project.sh` ile kurulan tüm projeler dahil).
 - **uid/gid 999:** Container 999:999 ile çalışır; `redis.key`, `healthcheck_password` ve `users.acl`
