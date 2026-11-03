@@ -13,6 +13,7 @@ TLS-only, ACL korumalı, read-only container olarak çalışan production Redis 
 .
 ├── init.sh                 → kurulum: TLS, parolalar, izinler, compose up, testler
 ├── app.sh                  → uygulama kullanıcıları: add / remove / rotate / list
+├── new-project.sh          → yanına (../redis-<proje>) proje başına ayrı Redis kurar
 ├── docker-compose.yml
 ├── .env.example            → init.sh ilk çalıştırmada .env'i buradan oluşturur
 ├── bin/
@@ -168,7 +169,40 @@ Uygulama başına yalıtım için:
   kapatılan/reddedilen bağlantı sayılarını gösterir. `Silinen key (evicted)` artıyorsa bellek yetmiyordur.
 - **Bağlantı:** uygulama tarafında connection pool üst sınırı.
 - **Bellek:** key'lerde TTL zorunlu tutulmalı. Kesin yalıtım gereken veya yoğun uygulamaya ayrı instance
-  kurun (bu dizinin bir kopyası, farklı IP/port ve kendi `maxmemory` değeriyle).
+  kurun (bkz. "Proje başına ayrı Redis").
+
+## Proje başına ayrı Redis
+
+Bir projenin belleği, bağlantıları, verisi ve parolaları diğerlerinden tamamen ayrı olsun
+isteniyorsa, bu dizin şablon olarak kullanılarak **yanına** yeni bir instance kurulur:
+
+```sh
+./new-project.sh etkinlik 6381 1024     # proje, port, maxmemory MB (varsayılan 1024)
+```
+
+```
+/app/
+├── main-redis/        ← yönetim buradan yapılır
+├── redis-etkinlik/
+└── redis-uyelik/
+```
+
+Projeler bilinçli olarak main-redis'in içine değil yanına açılır: veri/parolalar git reposuna
+girmez, main-redis'in kaldırılması/sıfırlanması projeleri etkilemez. Başka dizin için `DEST=/yol`.
+
+- Kendi container'ı (`etkinlik-redis-redis-1`), network'ü, parolaları ve `data/`'sı olur.
+- **TLS:** main-redis'in `tls/`'inde sertifika varsa (kurumsal veya kendi ürettiği) proje onu
+  symlink ile paylaşır: istemcilere tek CA, yenileme tek yerde (sonra her projede
+  `docker compose restart redis`). Sertifika yalnızca DNS adı (örn. `*.kurum.local`) içerebilir;
+  istemciler o adla bağlanır. main-redis'te sertifika yoksa proje kendi CA'sını üretir.
+- Container limiti `2 × maxmemory + 256 MB` (fork/COW + istemci buffer payı) olarak ayarlanır.
+- Hedef dizin, aynı compose projesi veya port zaten varsa, ya da tüm container limitleri + 2 GB
+  fiziksel RAM'i aşıyorsa hiçbir şey oluşturmadan durur.
+- `REDIS_IMAGE` / `REDIS_BIND_IP` bu dizinin `.env`'inden alınır; ortam değişkeni ile de verilebilir.
+  Projeye özel sertifika: `TLS_DIR=/yol ./new-project.sh ...` (`ca.crt`, `redis.crt`, `redis.key` kopyalanır).
+  DNS adı: `REDIS_TLS_EXTRA_SAN=DNS:redis-etkinlik.kurum.local ./new-project.sh ...`
+- Sonrası normal kurulumdur: `cd ../redis-etkinlik && ./app.sh ...`, `./init.sh`. Firewall kuralı
+  yeni port için ayrıca eklenir (bkz. "Firewall").
 
 `redis.conf` değiştirildiğinde `docker compose restart redis` gerekir; `.env` veya
 `docker-compose.yml` değiştirildiğinde `./init.sh` container'ı yeniden oluşturur.

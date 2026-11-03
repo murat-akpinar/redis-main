@@ -79,7 +79,7 @@ services:
 
     labels:
       com.diyanet.environment: ${ENVIRONMENT:-production}
-      com.diyanet.application: main-redis
+      com.diyanet.application: ${COMPOSE_PROJECT_NAME:-main-redis}
       com.diyanet.role: redis-cache
 
 networks:

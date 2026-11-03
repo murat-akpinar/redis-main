@@ -28,7 +28,9 @@ as_root() {
   else
     cmd="$1"
     shift
-    docker run --rm --user 0:0 --network none -v "$PWD:/w" -w /w \
+    # Aynı yollarla mount: tls/ başka projeye symlink olsa da container içinde çözülür
+    docker run --rm --user 0:0 --network none -v "$PWD:$PWD" -w "$PWD" \
+      -v "$(readlink -f tls):$(readlink -f tls)" \
       --entrypoint "$cmd" "$REDIS_IMAGE" "$@"
   fi
 }
@@ -128,6 +130,16 @@ ok "bind IP host üzerinde mevcut"
 docker compose config -q || die "docker-compose.yml geçersiz"
 ok "compose config geçerli"
 
+# Container 999:999 ile çalışır; host'ta bu uid/gid'e sahip kullanıcı/grup
+# redis.key, healthcheck parolası, users.acl ve data/'yı okuyabilir
+host999="$(getent passwd 999 | cut -d: -f1) $(getent group 999 | cut -d: -f1)"
+if [ -n "${host999# }" ]; then
+  echo "    [UYARI] host'ta uid/gid 999 kullanımda (${host999# }): bu kullanıcı/grubun üyeleri"
+  echo "            TLS anahtarını, healthcheck parolasını ve data/'yı okuyabilir"
+else
+  ok "uid/gid 999 host'ta kullanılmıyor"
+fi
+
 if [ "$(cat /proc/sys/vm/overcommit_memory 2>/dev/null || echo 1)" != "1" ]; then
   echo "    [UYARI] vm.overcommit_memory=1 değil; yük altında BGSAVE/AOF rewrite başarısız olabilir. Düzeltmek için:"
   echo "            echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-redis.conf && sudo sysctl --system"
@@ -138,13 +150,18 @@ fi
 ################################################################################
 log "2/6 TLS sertifikaları"
 ################################################################################
-mkdir -p tls pki
+mkdir -p tls
 chmod 0755 tls
-chmod 0700 pki
 
 if [ -s tls/ca.crt ] && [ -s tls/redis.crt ] && [ -s tls/redis.key ]; then
   ok "tls/ altında sertifikalar mevcut, üretim atlandı"
+elif [ -L tls ]; then
+  # Paylaşılan TLS'e üretim yapılırsa tüm projelerin CA'sı değişir
+  die "paylaşılan TLS ($(readlink -f tls)) eksik; sertifikayı orada yenileyip tekrar çalıştırın"
 else
+  # pki/ yalnızca sertifikayı biz üretiyorsak oluşur (kurumsal/paylaşılan TLS'te gerekmez)
+  mkdir -p pki
+  chmod 0700 pki
   (
     umask 077
 
@@ -188,14 +205,19 @@ EOF
 fi
 
 # eski sürümlerden kalan serial dosyası container'a mount edilmesin
-[ -f tls/ca.srl ] && mv tls/ca.srl pki/ca.srl
+[ -f tls/ca.srl ] && mkdir -p pki && mv tls/ca.srl pki/ca.srl
 
 openssl verify -CAfile tls/ca.crt tls/redis.crt >/dev/null || die "redis.crt, ca.crt ile doğrulanamadı"
 ok "sertifika zinciri doğrulandı"
 
-openssl x509 -in tls/redis.crt -noout -checkip "$REDIS_BIND_IP" 2>/dev/null | grep -q 'does match' \
-  || die "redis.crt, REDIS_BIND_IP=${REDIS_BIND_IP} adresini içermiyor (IP değişmiş olabilir). Yenilemek için tls/redis.crt ve tls/redis.key silip tekrar çalıştırın."
-ok "sertifika ${REDIS_BIND_IP} adresini içeriyor"
+if openssl x509 -in tls/redis.crt -noout -checkip "$REDIS_BIND_IP" 2>/dev/null | grep -q 'does match'; then
+  ok "sertifika ${REDIS_BIND_IP} adresini içeriyor"
+elif [ -s pki/ca.key ]; then
+  die "redis.crt, REDIS_BIND_IP=${REDIS_BIND_IP} adresini içermiyor (IP değişmiş olabilir). Yenilemek için tls/redis.crt ve tls/redis.key silip tekrar çalıştırın."
+else
+  # Kurumsal sertifika (ör. yalnızca DNS adı / LB adı): istemciler bu adla bağlanır
+  ok "kurumsal sertifika, IP içermiyor; istemciler şu adlardan biriyle bağlanmalı: $(openssl x509 -in tls/redis.crt -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ')"
+fi
 
 if openssl x509 -in tls/redis.crt -noout -checkend 2592000 >/dev/null; then
   ok "sertifika geçerlilik sonu: $(openssl x509 -in tls/redis.crt -noout -enddate | cut -d= -f2)"
