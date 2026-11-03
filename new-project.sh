@@ -2,7 +2,9 @@
 # Bu dizini şablon alarak yanına (../redis-<proje>) yalıtılmış yeni bir Redis kurar:
 # kendi container'ı, portu, bellek limiti, TLS'i, parolaları ve verisi olur.
 #
-#   ./new-project.sh <proje> <port> [maxmemory_mb=1024]
+#   ./new-project.sh <proje> [port|auto] [maxmemory_mb=1024]
+#
+# Port verilmezse (veya auto) 6380'den başlayarak ilk boş port seçilir.
 #
 # Proje adı yeni Redis'teki uygulama kullanıcısı ve key prefix'idir (<proje>:*).
 # Ortam değişkeni ile verilebilir (yoksa bu dizinin .env'inden alınır):
@@ -11,40 +13,39 @@
 # TLS_DIR yoksa ve bu dizinin tls/'inde sertifika varsa proje onu paylaşır (symlink):
 # tek sertifika, tek yenileme, istemcilere tek CA. Hiçbiri yoksa proje kendi CA'sını üretir.
 #   DEST=<dizin>     → ../redis-<proje> yerine başka bir dizine kurar
-# Hedef dizin varsa dokunulmaz.
+# Hedef dizin varsa dokunulmaz. Port/bellek sonradan: cd <dizin> && ./init.sh --port N --maxmemory MB
 set -eu
 
 cd "$(dirname "$0")"
 . ./bin/lib.sh
 
-[ $# -ge 2 ] || { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+[ $# -ge 1 ] || { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 name="$1"
-port="$2"
+port="${2:-auto}"
 mem="${3:-1024}"
 dest="${DEST:-$(dirname "$PWD")/redis-$name}"
 
 case "$name" in [a-z0-9]*) ;; *) name="" ;; esac
 valid_app_name "$name" || die "proje adı: küçük harf/rakamla başlamalı; küçük harf, rakam, '-', '_'"
-case "$port" in ''|*[!0-9]*) die "port sayı olmalı" ;; esac
+if [ "$port" = auto ]; then
+  port=6380
+  while port_used "$port"; do port=$((port + 1)); done
+fi
+case "$port" in ''|*[!0-9]*) die "port sayı veya auto olmalı" ;; esac
 [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || die "port 1024-65535 arası olmalı"
 case "$mem" in ''|*[!0-9]*) die "maxmemory_mb sayı olmalı" ;; esac
 [ "$mem" -ge 256 ] || die "maxmemory_mb en az 256"
 
 project="${name}-redis"
-limit=$((mem * 2 + 256)) # maxmemory + fork/COW payı + maxmemory-clients (256mb)
+limit="$(mem_limit_mb "$mem")"
 
 [ ! -e "$dest" ] || die "$dest zaten var; üzerine yazılmaz"
 # Aynı compose projesi başka dizinde varsa compose onun container'ını yeniden oluşturur
 [ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$project")" ] \
   || die "'$project' compose projesi zaten var"
-[ -z "$(ss -Hltn "sport = :$port")" ] || die "port $port kullanımda"
-docker ps -a --format '{{.Ports}}' | grep -q ":${port}->" && die "port $port bir container'a atanmış"
+port_used "$port" && die "port $port kullanımda (dinleniyor veya bir container'a atanmış)"
 
-# ponytail: limitsiz (0) container'lar sayılmaz; tüm container'lar mem_limit'li varsayılır
-used="$(docker ps -aq | xargs -r docker inspect -f '{{.HostConfig.Memory}}' | awk '{s += $1} END {print int(s / 1048576)}')"
-total="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
-[ $((used + limit + 2048)) -le "$total" ] \
-  || die "RAM yetersiz: mevcut limitler ${used} + yeni ${limit} + sistem 2048 MB > ${total} MB"
+check_ram "$limit"
 
 from_env() { grep "^$1=" .env 2>/dev/null | cut -d= -f2- || true; }
 image="${REDIS_IMAGE:-$(from_env REDIS_IMAGE)}"

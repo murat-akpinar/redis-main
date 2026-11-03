@@ -15,6 +15,30 @@ acquire_lock() {
   return 0
 }
 
+# Port host'ta dinleniyor veya bir container'a atanmış mı (durmuş container'lar dahil;
+# docker ps yalnızca çalışanların portunu gösterir)
+port_used() {
+  { ss -Hltn | awk '{n = split($4, a, ":"); print a[n]}'
+    docker ps -aq | xargs -r docker inspect -f \
+      '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{println .HostPort}}{{end}}{{end}}'
+  } | grep -qx "$1"
+}
+
+# maxmemory (MB) için container limiti: maxmemory + fork/COW payı + maxmemory-clients (256mb)
+mem_limit_mb() { echo $(($1 * 2 + 256)); }
+
+# Tüm container limitleri ($2 id'li container hariç) + yeni limit ($1 MB) + 2 GB sistem payı
+# fiziksel RAM'i aşmamalı.
+# ponytail: limitsiz (0) container'lar sayılmaz; tüm container'lar mem_limit'li varsayılır
+check_ram() {
+  _used="$(docker ps -aq --no-trunc | grep -vx "${2:-yok}" \
+    | xargs -r docker inspect -f '{{.HostConfig.Memory}}' | awk '{s += $1} END {print int(s / 1048576)}')"
+  _total="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
+  [ $((_used + $1 + 2048)) -le "$_total" ] \
+    || die "RAM yetersiz: diğer container limitleri ${_used} + yeni ${1} + sistem 2048 MB > ${_total} MB"
+  return 0
+}
+
 # config/apps: satır başına bir uygulama adı, '#' sonrası yorum
 apps_list() {
   [ -f "$APPS_FILE" ] || return 0

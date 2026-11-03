@@ -8,6 +8,11 @@
 #   6) doğrulama testleri
 #
 # Tekrar çalıştırılabilir: mevcut sertifika/parola/ACL dosyalarına dokunmaz.
+#
+#   ./init.sh [--port N] [--maxmemory MB]
+#     --port       yayınlanan portu değiştirir (.env)
+#     --maxmemory  redis.conf maxmemory + .env container limitlerini birlikte değiştirir
+#   Değişiklik varsa container yeniden oluşturulur (kısa kesinti; veri AOF/RDB'den yüklenir).
 # Kurumsal CA sertifikası kullanılacaksa tls/ altına ca.crt, redis.crt, redis.key
 # koyun; script TLS üretim adımını atlar.
 set -eu
@@ -15,6 +20,19 @@ set -eu
 cd "$(dirname "$0")"
 
 . ./bin/lib.sh
+
+new_port=""
+new_mem=""
+while [ $# -gt 0 ]; do
+  [ $# -ge 2 ] || die "$1 için değer eksik (kullanım: ./init.sh [--port N] [--maxmemory MB])"
+  case "$1" in
+    --port)      new_port="$2" ;;
+    --maxmemory) new_mem="$2" ;;
+    *)           die "bilinmeyen argüman: $1 (kullanım: ./init.sh [--port N] [--maxmemory MB])" ;;
+  esac
+  shift 2
+done
+
 acquire_lock
 
 # Root gerektiren işlemler (chown/chmod 999:999):
@@ -61,6 +79,35 @@ set_env() {
 set -a
 . ./.env
 set +a
+
+# --- Sonradan port / bellek değişikliği (değişkenler set -a ile export edildiği için
+# yeniden atama compose'a da geçer)
+if [ -n "$new_port" ]; then
+  case "$new_port" in ''|*[!0-9]*) die "--port sayı olmalı" ;; esac
+  [ "$new_port" -ge 1024 ] && [ "$new_port" -le 65535 ] || die "--port 1024-65535 arası olmalı"
+  if [ "$new_port" != "${REDIS_PUBLISHED_PORT:-6379}" ]; then
+    port_used "$new_port" && die "port $new_port kullanımda (dinleniyor veya bir container'a atanmış)"
+    set_env REDIS_PUBLISHED_PORT "$new_port"
+    REDIS_PUBLISHED_PORT="$new_port"
+    ok "port ${new_port} olarak ayarlandı (istemcileri ve firewall kuralını güncelleyin)"
+  fi
+fi
+if [ -n "$new_mem" ]; then
+  case "$new_mem" in ''|*[!0-9]*) die "--maxmemory sayı (MB) olmalı" ;; esac
+  [ "$new_mem" -ge 256 ] || die "--maxmemory en az 256"
+  new_limit="$(mem_limit_mb "$new_mem")"
+fi
+# Aynı değer tekrar yazılmasın: redis.conf'un mtime'ı değişirse container gereksiz restart olur
+if [ -n "$new_mem" ] && ! { grep -qx "maxmemory ${new_mem}mb" config/redis.conf \
+     && [ "${REDIS_MEM_LIMIT:-}" = "${new_limit}m" ]; }; then
+  check_ram "$new_limit" "$(docker compose ps -aq --no-trunc redis 2>/dev/null || true)"
+  sed -i "s/^maxmemory .*/maxmemory ${new_mem}mb/" config/redis.conf
+  set_env REDIS_MEM_LIMIT "${new_limit}m"
+  set_env REDIS_MEM_RESERVATION "${new_mem}m"
+  REDIS_MEM_LIMIT="${new_limit}m"
+  REDIS_MEM_RESERVATION="${new_mem}m"
+  ok "maxmemory ${new_mem}mb, container limiti ${new_limit}m olarak ayarlandı"
+fi
 
 # --- REDIS_IMAGE: boşsa REDIS_VERSION etiketini çekip digest ile sabitler
 if [ -z "${REDIS_IMAGE:-}" ]; then

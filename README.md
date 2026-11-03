@@ -186,7 +186,9 @@ Bir projenin belleği, bağlantıları, verisi ve parolaları diğerlerinden tam
 isteniyorsa, bu dizin şablon olarak kullanılarak **yanına** yeni bir instance kurulur:
 
 ```sh
-./new-project.sh etkinlik 6381 1024     # proje, port, maxmemory MB (varsayılan 1024)
+./new-project.sh etkinlik                # port otomatik, maxmemory 1024 MB
+./new-project.sh etkinlik auto 2048      # port otomatik, maxmemory 2048 MB
+./new-project.sh etkinlik 6390 2048      # port elle
 ```
 
 ```
@@ -234,6 +236,30 @@ redis-etkinlik/
 Her proje ayrı bir Redis olduğu için **her projeye ayrı port** gerekir (aynı IP'de bir portu tek
 süreç dinleyebilir). Aynı projeye bağlanan birden fazla uygulama ise aynı portu paylaşır; her biri
 kendi kullanıcısını alır: `cd ../redis-etkinlik && ./app.sh add rapor`.
+
+Port verilmezse (veya `auto`) 6380'den başlayarak ilk boş port seçilir. Boş sayılmayanlar: host'ta
+dinlenen portlar ve **durdurulmuş olanlar dahil** tüm container'lara atanmış portlar (durmuş bir
+projenin portu başkasına verilmez). Seçilen port kurulum çıktısında ve `.env`'de görünür.
+
+### Port / bellek sonradan değiştirme
+
+```sh
+cd ../redis-etkinlik
+./init.sh --port 6390                    # yalnızca port
+./init.sh --maxmemory 2048               # yalnızca bellek
+./init.sh --port 6390 --maxmemory 2048   # ikisi birden
+```
+
+- `--maxmemory`, `redis.conf`'taki `maxmemory`'yi ve `.env`'deki container limitini
+  (`2 × maxmemory + 256 MB`) birlikte değiştirir; RAM kontrolü projenin kendi eski limitini saymaz.
+- Değişiklik varsa container yeniden oluşturulur: **kısa kesinti**, veri AOF/RDB'den geri yüklenir,
+  parolalar ve ACL değişmez. Aynı değer verilirse hiçbir şey yeniden başlatılmaz.
+- `maxmemory` mevcut kullanımın altına indirilirse `allkeys-lru` ile key'ler silinir
+  (`./app.sh stats` → kullanılan bellek).
+- Port değişince istemcilerin bağlantı ayarını ve firewall kuralını güncelleyin. Sertifika porta
+  bağlı olmadığı için değişmez.
+- Aynı seçenekler main-redis'in `./init.sh`'ında da çalışır (main'in elle ayarlanmış
+  2 GB / 3 GB oranı formüle göre `2 × maxmemory + 256 MB` olur).
 
 ### Proje yönetimi
 
@@ -385,7 +411,7 @@ Uygulama listesini korumak için `config/apps`'i silmeyin; `init.sh` kullanıcı
 | `host'ta uid/gid 999 kullanımda` | Bkz. "Güvenlik notları" → uid/gid 999. |
 | `new-project.sh`: `... zaten var; üzerine yazılmaz` | Hedef dizin mevcut. Yarım kalmış kurulumsa dizinde `./init.sh && ./app.sh add <proje>`. |
 | `new-project.sh`: `compose projesi zaten var` | Aynı adla bir proje başka dizinde kurulu; farklı ad seçin. |
-| `new-project.sh`: `port ... kullanımda` / `bir container'a atanmış` | Başka port seçin (`docker ps` ile kullanılanlara bakın). |
+| `port ... kullanımda (dinleniyor veya bir container'a atanmış)` | Başka port seçin veya portu otomatik seçtirin (`new-project.sh <proje>`). Durdurulmuş container'ların portları da dolu sayılır: `docker ps -a`. |
 | `new-project.sh`: `RAM yetersiz` | Tüm container limitleri + yeni limit + 2 GB > fiziksel RAM. Daha küçük `maxmemory` verin veya RAM'i artırın. |
 | `new-project.sh`: `REDIS_BIND_IP belirsiz` | Terminal yok ve IP bilinmiyor: `REDIS_BIND_IP=<ip> ./new-project.sh ...` |
 | `paylaşılan TLS (...) eksik` | main-redis'in `tls/`'i boş (yenileme yarıda). Sertifikayı orada tamamlayıp tekrar çalıştırın. |
@@ -394,6 +420,7 @@ Uygulama listesini korumak için `config/apps`'i silmeyin; `init.sh` kullanıcı
 
 - `maxmemory` + `maxmemory-clients` (`config/redis.conf`, 2gb + 256mb) ile `REDIS_MEM_LIMIT`
   (`.env`, 3g) birlikte değiştirilmeli; fork (BGSAVE/AOF rewrite) sırasında COW için pay bırakın.
+  `./init.sh --maxmemory <MB>` ikisini birlikte ayarlar (bkz. "Port / bellek sonradan değiştirme").
 - `config/users.acl` `init.sh` / `app.sh` tarafından üretilir ve `ACL LOAD` ile yüklenir.
   Elle düzenlemeyin; `ACL SETUSER` + `ACL SAVE` kullanmayın (dosya read-only mount, değişiklikler kaybolur).
 
