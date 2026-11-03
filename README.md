@@ -29,9 +29,11 @@ TLS-only, ACL korumalı, read-only container olarak çalışan production Redis 
 │   └── users.acl.example   → örnek ACL formatı
 ├── secrets/                → <kullanıcı>_password dosyaları (git dışı)
 ├── tls/                    → ca.crt, redis.crt, redis.key (git dışı, container'a mount edilir)
-├── pki/                    → CA anahtarı; yalnızca sertifikayı init.sh üretirse oluşur (git dışı, mount EDİLMEZ)
-└── data/                   → AOF/RDB (git dışı)
+└── pki/                    → CA anahtarı; yalnızca sertifikayı init.sh üretirse oluşur (git dışı, mount EDİLMEZ)
 ```
+
+Saf cache: kalıcılık (AOF/RDB) kapalıdır, host'a veri yazılmaz. Container restart edilince
+cache boş başlar; uygulamalar buna hazır olmalıdır.
 
 ## Gereksinimler
 
@@ -66,7 +68,7 @@ Hiçbir dosyayı düzenlemeye gerek yoktur. `init.sh` sırasıyla:
 2. **TLS:** `tls/` boşsa kendi CA'sını ve sunucu sertifikasını üretir; doluysa (kurumsal sertifika)
    zinciri doğrular, üretim yapmaz
 3. **Parolalar ve ACL:** `admin`, `healthcheck` ve `config/apps`'teki uygulamalar için parola üretir, `config/users.acl`'i yazar
-4. **İzinler:** `data/` 999:999 0700; `users.acl`, `healthcheck_password`, `redis.key` kurulum kullanıcısı:999 (container yalnızca okur)
+4. **İzinler:** `users.acl`, `healthcheck_password`, `redis.key` kurulum kullanıcısı:999 (container yalnızca okur)
 5. **Başlatma:** `docker compose up -d`, `healthy` bekleme (en fazla ~90 sn), `ACL LOAD`
 6. **Testler:**
    - container içi healthcheck
@@ -201,12 +203,12 @@ isteniyorsa, bu dizin şablon olarak kullanılarak **yanına** yeni bir instance
 Projeler bilinçli olarak main-redis'in içine değil yanına açılır: veri/parolalar git reposuna
 girmez, main-redis'in kaldırılması/sıfırlanması projeleri etkilemez. Başka dizin için `DEST=/yol`.
 
-- Kendi container'ı (`etkinlik-redis-redis-1`), network'ü, parolaları ve `data/`'sı olur.
+- Kendi container'ı (`etkinlik-redis-redis-1`), network'ü ve parolaları olur.
 - **TLS:** main-redis'in `tls/`'inde sertifika varsa (kurumsal veya kendi ürettiği) proje onu
   symlink ile paylaşır: istemcilere tek CA, yenileme tek yerde (sonra her projede
   `docker compose restart redis`). Sertifika yalnızca DNS adı (örn. `*.kurum.local`) içerebilir;
   istemciler o adla bağlanır. main-redis'te sertifika yoksa proje kendi CA'sını üretir.
-- Container limiti `2 × maxmemory + 256 MB` (fork/COW + istemci buffer payı) olarak ayarlanır.
+- Container limiti `1.25 × maxmemory + 256 MB` (parçalanma + istemci buffer payı) olarak ayarlanır.
 - Hedef dizin, aynı compose projesi veya port zaten varsa, ya da tüm container limitleri + 2 GB
   fiziksel RAM'i aşıyorsa hiçbir şey oluşturmadan durur.
 - `REDIS_IMAGE` / `REDIS_BIND_IP` bu dizinin `.env`'inden alınır; ortam değişkeni ile de verilebilir.
@@ -224,8 +226,7 @@ redis-etkinlik/
 ├── .env                    → port, bellek, COMPOSE_PROJECT_NAME=etkinlik-redis
 ├── config/                 → redis.conf (maxmemory projeye göre), users.acl, apps
 ├── secrets/                → admin, healthcheck, etkinlik parolaları (0700)
-├── tls -> /app/main-redis/tls  (mutlak yol symlink)
-└── data/
+└── tls -> /app/main-redis/tls  (mutlak yol symlink)
 ```
 
 `pki/` yalnızca proje kendi CA'sını ürettiğinde (main-redis'te sertifika yoksa) oluşur.
@@ -251,15 +252,15 @@ cd ../redis-etkinlik
 ```
 
 - `--maxmemory`, `redis.conf`'taki `maxmemory`'yi ve `.env`'deki container limitini
-  (`2 × maxmemory + 256 MB`) birlikte değiştirir; RAM kontrolü projenin kendi eski limitini saymaz.
-- Değişiklik varsa container yeniden oluşturulur: **kısa kesinti**, veri AOF/RDB'den geri yüklenir,
+  (`1.25 × maxmemory + 256 MB`) birlikte değiştirir; RAM kontrolü projenin kendi eski limitini saymaz.
+- Değişiklik varsa container yeniden oluşturulur: **kısa kesinti**, cache boş başlar,
   parolalar ve ACL değişmez. Aynı değer verilirse hiçbir şey yeniden başlatılmaz.
 - `maxmemory` mevcut kullanımın altına indirilirse `allkeys-lru` ile key'ler silinir
   (`./app.sh stats` → kullanılan bellek).
 - Port değişince istemcilerin bağlantı ayarını ve firewall kuralını güncelleyin. Sertifika porta
   bağlı olmadığı için değişmez.
-- Aynı seçenekler main-redis'in `./init.sh`'ında da çalışır (main'in elle ayarlanmış
-  2 GB / 3 GB oranı formüle göre `2 × maxmemory + 256 MB` olur).
+- Aynı seçenekler main-redis'in `./init.sh`'ında da çalışır (main'in 2 GB / 3 GB oranı
+  formüle göre `1.25 × maxmemory + 256 MB` = 2816 MB olur).
 
 ### Proje yönetimi
 
@@ -276,14 +277,14 @@ cd ../redis-etkinlik
   `new-project.sh` çalıştırmak "zaten var" diye durur; bu bilinçlidir.
 - **Script güncellemeleri** mevcut projelere kendiliğinden geçmez; projeler kurulum anındaki
   `init.sh` / `app.sh` / `bin/` kopyasıyla çalışır.
-- **Projeyi kaldırma** (VERİ ve parolalar silinir; önce `data/`'yı kontrol edin):
+- **Projeyi kaldırma** (parolalar silinir):
 
   ```sh
   cd ../redis-etkinlik && docker compose down && cd ..
   docker run --rm --user 0:0 -v "$PWD:/w" --entrypoint rm "$(grep ^REDIS_IMAGE= redis-etkinlik/.env | cut -d= -f2)" -rf /w/redis-etkinlik
   ```
 
-  `data/` 999 sahipli olduğu için normal `rm -rf` ile silinmez; docker üzerinden silinir.
+  Eski sürümlerden kalan `data/` 999 sahipli olabilir; bu yüzden docker üzerinden silinir.
   Paylaşılan `tls/` symlink olduğu için main-redis'in sertifikaları etkilenmez.
 
 `redis.conf` değiştirildiğinde `docker compose restart redis` gerekir; `.env` veya
@@ -309,23 +310,15 @@ REDISCLI_AUTH="$(cat secrets/admin_password)" docker compose exec -e REDISCLI_AU
   redis-cli --tls --cacert /tls/ca.crt -h 127.0.0.1 --user admin --no-auth-warning info memory
 ```
 
-Faydalı komutlar: `INFO memory`, `INFO stats` (`evicted_keys`), `INFO persistence`,
+Faydalı komutlar: `INFO memory`, `INFO stats` (`evicted_keys`),
 `CLIENT LIST`, `SLOWLOG GET 10`, `ACL LOG`.
 
-### Yedekleme / geri yükleme
+### Kalıcılık
 
-Veri `data/` altında AOF (`appendonlydir/`) ve RDB (`dump.rdb`) olarak tutulur. Cache olarak
-kullanılıyorsa yedek şart değildir; gerekiyorsa:
-
-```sh
-# Anlık RDB al ve kopyala
-REDISCLI_AUTH="$(cat secrets/admin_password)" docker compose exec -e REDISCLI_AUTH redis \
-  redis-cli --tls --cacert /tls/ca.crt -h 127.0.0.1 --user admin --no-auth-warning bgsave
-docker compose cp redis:/data/dump.rdb ./yedek-$(date +%F).rdb
-```
-
-Geri yükleme: `docker compose down`, `data/` içeriğini temizleyip `dump.rdb`'yi koyun
-(sahibi 999:999), `appendonly` açık olduğu için ilk açılışta AOF yoksa RDB'den yüklenir; `./init.sh`.
+Saf cache olarak kullanıldığı için AOF ve RDB kapalıdır (`save ""`, `appendonly no`); `/data`
+container içinde tmpfs'tir. Restart, image güncellemesi veya `--port/--maxmemory` değişikliğinden
+sonra cache boş başlar. Önceki sürümlerden kalan host'taki `data/` dizini artık kullanılmaz;
+docker üzerinden silinebilir (bkz. "Projeyi kaldırma").
 
 ### Loglar
 
@@ -346,7 +339,7 @@ yeni adresi bildirin.
 ```
 
 Yeni image çekilir, digest `.env`'e yazılır ve container yeniden oluşturulur (kısa kesinti;
-veri AOF'tan geri yüklenir).
+cache boş başlar).
 
 ### Sertifika yenileme
 
@@ -377,10 +370,9 @@ diyerek durur; main-redis'in CA'sının yerine yenisini üretmez.
 
 ```sh
 docker compose down
-# Üretilen tüm dosyalar (VERİ, sertifikalar, parolalar dahil) silinir:
+# Üretilen tüm dosyalar (sertifikalar, parolalar dahil) silinir:
 docker run --rm --network none -v "$PWD:/w" -w /w --entrypoint sh "$(grep ^REDIS_IMAGE= .env | cut -d= -f2)" -c \
-  'rm -rf .env pki config/users.acl config/apps data tls/*.crt tls/*.key tls/*.srl secrets/*_password
-   mkdir data && touch data/.gitkeep && chown '"$(id -u):$(id -g)"' data data/.gitkeep'
+  'rm -rf .env pki config/users.acl config/apps data tls/*.crt tls/*.key tls/*.srl secrets/*_password'
 ./init.sh
 ```
 
@@ -419,7 +411,7 @@ Uygulama listesini korumak için `config/apps`'i silmeyin; `init.sh` kullanıcı
 ## Notlar
 
 - `maxmemory` + `maxmemory-clients` (`config/redis.conf`, 2gb + 256mb) ile `REDIS_MEM_LIMIT`
-  (`.env`, 3g) birlikte değiştirilmeli; fork (BGSAVE/AOF rewrite) sırasında COW için pay bırakın.
+  (`.env`, 3g) birlikte değiştirilmeli; parçalanma ve istemci buffer'ları için pay bırakın.
   `./init.sh --maxmemory <MB>` ikisini birlikte ayarlar (bkz. "Port / bellek sonradan değiştirme").
 - `config/users.acl` `init.sh` / `app.sh` tarafından üretilir ve `ACL LOAD` ile yüklenir.
   Elle düzenlemeyin; `ACL SETUSER` + `ACL SAVE` kullanmayın (dosya read-only mount, değişiklikler kaybolur).
@@ -458,7 +450,7 @@ sudo iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEP
 - **Parolalar:** `secrets/*_password` yalnızca kurulum kullanıcısı tarafından okunabilir (0600).
   Uygulama ekiplerine güvenli kanal/vault ile iletin; e-posta/chat/git'e koymayın.
   Sızma şüphesinde `./app.sh rotate <isim>`: eski parola anında geçersiz olur, açık bağlantılar kapatılır.
-- **Veri:** `data/` 0700; AOF/RDB şifresiz tutulur. Cache'e hassas veri yazılıyorsa diski ve yedekleri buna göre koruyun.
+- **Veri:** kalıcılık kapalı, cache içeriği diske yazılmaz (container'da `/data` tmpfs).
 - **Ağ:** 6379'a yalnızca uygulama sunucularından / LB'den izin verin. Docker'ın açtığı portlar
   ufw/firewalld INPUT kurallarını **atlar**; kural `DOCKER-USER` zincirine yazılmalıdır (bkz. "Firewall").
   Firewall yoksa porta erişen herkes, parola bilmeden ~10k boş TCP bağlantısı açıp `maxclients`'ı
@@ -467,7 +459,7 @@ sudo iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEP
 - **docker grubu** root yetkisine eşdeğerdir; bu sunucuda docker grubundaki herkes parolalara ve veriye erişebilir
   (`new-project.sh` ile kurulan tüm projeler dahil).
 - **uid/gid 999:** Container 999:999 ile çalışır; `redis.key`, `healthcheck_password` ve `users.acl`
-  grup 999'a okunur, `data/` uid 999'a aittir. Host'ta bu uid/gid'e sahip bir kullanıcı/grup varsa
+  grup 999'a okunur. Host'ta bu uid/gid'e sahip bir kullanıcı/grup varsa
   (`getent passwd 999; getent group 999`) onun üyeleri bu dosyaları okuyabilir; `init.sh` uyarır.
   Bu durumda o kullanıcıya/gruba kimsenin eklenmediğinden emin olun.
 - **Projeler:** her projenin parolaları ve ACL'i ayrıdır; bir projenin parolası diğerinde geçmez.

@@ -28,7 +28,7 @@ services:
     # Redis komutları büyük ölçüde tek çekirdekte işler; sunucunun geri kalanını korur
     cpus: ${REDIS_CPUS:-2}
 
-    # redis.conf içindeki maxmemory bu limitin altında kalmalı (fork/COW payı için)
+    # redis.conf içindeki maxmemory bu limitin altında kalmalı (parçalanma + istemci buffer payı)
     mem_limit: ${REDIS_MEM_LIMIT:-3g}
     mem_reservation: ${REDIS_MEM_RESERVATION:-2g}
     memswap_limit: ${REDIS_MEM_LIMIT:-3g}
@@ -42,6 +42,8 @@ services:
 
     tmpfs:
       - /tmp:size=64m,mode=1777,nosuid,nodev,noexec
+      # Kalıcılık kapalı (saf cache); Redis çalışma dizini, host'a veri yazılmaz
+      - /data:size=64m,uid=999,gid=999,mode=0700,nosuid,nodev,noexec
 
     ports:
       - name: redis-tls
@@ -53,7 +55,6 @@ services:
     volumes:
       - ./config/redis.conf:/usr/local/etc/redis/redis.conf:ro
       - ./config/users.acl:/usr/local/etc/redis/users.acl:ro
-      - ./data:/data:rw
       - ./tls:/tls:ro
       - ./secrets/healthcheck_password:/run/secrets/healthcheck_password:ro
       - ./bin/healthcheck.sh:/usr/local/bin/redis-healthcheck:ro

@@ -24,8 +24,9 @@ port_used() {
   } | grep -qx "$1"
 }
 
-# maxmemory (MB) için container limiti: maxmemory + fork/COW payı + maxmemory-clients (256mb)
-mem_limit_mb() { echo $(($1 * 2 + 256)); }
+# maxmemory (MB) için container limiti: maxmemory + %25 parçalanma payı + maxmemory-clients (256mb).
+# Kalıcılık kapalı olduğu için fork/COW payı gerekmez.
+mem_limit_mb() { echo $(($1 * 5 / 4 + 256)); }
 
 # Tüm container limitleri ($2 id'li container hariç) + yeni limit ($1 MB) + 2 GB sistem payı
 # fiziksel RAM'i aşmamalı.

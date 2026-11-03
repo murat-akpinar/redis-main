@@ -12,7 +12,7 @@
 #   ./init.sh [--port N] [--maxmemory MB]
 #     --port       yayınlanan portu değiştirir (.env)
 #     --maxmemory  redis.conf maxmemory + .env container limitlerini birlikte değiştirir
-#   Değişiklik varsa container yeniden oluşturulur (kısa kesinti; veri AOF/RDB'den yüklenir).
+#   Değişiklik varsa container yeniden oluşturulur (kısa kesinti; cache boş başlar).
 # Kurumsal CA sertifikası kullanılacaksa tls/ altına ca.crt, redis.crt, redis.key
 # koyun; script TLS üretim adımını atlar.
 set -eu
@@ -178,11 +178,11 @@ docker compose config -q || die "docker-compose.yml geçersiz"
 ok "compose config geçerli"
 
 # Container 999:999 ile çalışır; host'ta bu uid/gid'e sahip kullanıcı/grup
-# redis.key, healthcheck parolası, users.acl ve data/'yı okuyabilir
+# redis.key, healthcheck parolası ve users.acl'i okuyabilir
 host999="$(getent passwd 999 | cut -d: -f1) $(getent group 999 | cut -d: -f1)"
 if [ -n "${host999# }" ]; then
   echo "    [UYARI] host'ta uid/gid 999 kullanımda (${host999# }): bu kullanıcı/grubun üyeleri"
-  echo "            TLS anahtarını, healthcheck parolasını ve data/'yı okuyabilir"
+  echo "            TLS anahtarını ve healthcheck parolasını okuyabilir"
 else
   ok "uid/gid 999 host'ta kullanılmıyor"
 fi
@@ -288,10 +288,6 @@ ok "parolalar ve users.acl hazır"
 ################################################################################
 log "4/6 Sahiplik ve izinler"
 ################################################################################
-mkdir -p data
-as_root chown -R 999:999 data
-# AOF/RDB dosyaları cache içeriğinin tamamını içerir; host'taki diğer kullanıcılar okuyamasın
-as_root chmod 0700 data
 # Sahibi kurulum kullanıcısı (tekrar çalıştırmada okuyup güncelleyebilsin),
 # grup 999 (container yalnızca okur)
 as_root chown "$(id -u):999" config/users.acl secrets/healthcheck_password tls/redis.key
