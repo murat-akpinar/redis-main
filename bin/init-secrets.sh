@@ -56,7 +56,9 @@ done
 #   -function        : FUNCTION LOAD/FLUSH/DELETE tüm sunucuyu etkiler (FCALL serbest;
 #                      fonksiyonları admin yükler)
 #   -script|flush -script|kill : script cache'i ve diğer uygulamaların scriptlerini etkiler
-APP_COMMANDS="+@all -@dangerous -scan -randomkey -pubsub -function -script|flush -script|kill"
+#   -client|tracking : BCAST modunda prefix kısıtı uygulanmaz; diğer uygulamaların
+#                      key isimleri invalidation mesajıyla sızar
+APP_COMMANDS="+@all -@dangerous -scan -randomkey -pubsub -function -script|flush -script|kill -client|tracking"
 
 hash() {
   printf '%s' "$(cat "secrets/$1_password")" | sha256sum | cut -d' ' -f1

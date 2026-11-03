@@ -108,6 +108,7 @@ test_app() {
     "exists __baska_uygulama__:__init_check|başka prefix'e erişim engelli" \
     "scan 0|SCAN engelli (diğer uygulamaların key isimleri görünmez)" \
     "function list|FUNCTION yönetimi engelli" \
+    "client tracking on bcast|CLIENT TRACKING engelli (BCAST key isimlerini sızdırır)" \
     "config get maxmemory|CONFIG engelli (@dangerous)"
   do
     _cmd="${_check%%|*}"
