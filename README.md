@@ -6,6 +6,8 @@ TLS-only, ACL korumalı, read-only container olarak çalışan production Redis 
 - `default` kullanıcı kapalı. Her uygulama kendi kullanıcısı ve parolasıyla bağlanır, yalnızca kendi key prefix'ine erişir.
 - Container root olmayan kullanıcıyla (999), `read_only`, `cap_drop: ALL`, `no-new-privileges` ile çalışır.
 - Kurulum ve uygulama yönetimi iki script ile yapılır: `init.sh` ve `app.sh`.
+- Tam yalıtım gereken projeler için `new-project.sh` yanına ayrı bir Redis kurar
+  (kendi container'ı, portu, belleği, parolaları ve verisi; bkz. "Proje başına ayrı Redis").
 
 ## Dizin yapısı
 
@@ -27,7 +29,7 @@ TLS-only, ACL korumalı, read-only container olarak çalışan production Redis 
 │   └── users.acl.example   → örnek ACL formatı
 ├── secrets/                → <kullanıcı>_password dosyaları (git dışı)
 ├── tls/                    → ca.crt, redis.crt, redis.key (git dışı, container'a mount edilir)
-├── pki/                    → CA anahtarı (git dışı, container'a mount EDİLMEZ)
+├── pki/                    → CA anahtarı; yalnızca sertifikayı init.sh üretirse oluşur (git dışı, mount EDİLMEZ)
 └── data/                   → AOF/RDB (git dışı)
 ```
 
@@ -60,7 +62,9 @@ Hiçbir dosyayı düzenlemeye gerek yoktur. `init.sh` sırasıyla:
    - `REDIS_BIND_IP` boşsa sunucunun IP'lerini bulur (docker/bridge/VPN arayüzleri hariç);
      tek IP varsa onu kullanır, birden fazlaysa listeleyip sorar ve `.env`'e yazar
    - IP'nin host'ta tanımlı olduğunu, compose dosyasını ve `vm.overcommit_memory`'yi kontrol eder
-2. **TLS:** `tls/` boşsa kendi CA'sını ve sunucu sertifikasını üretir
+   - host'ta uid/gid 999 kullanılıyorsa uyarır (bkz. "Güvenlik notları")
+2. **TLS:** `tls/` boşsa kendi CA'sını ve sunucu sertifikasını üretir; doluysa (kurumsal sertifika)
+   zinciri doğrular, üretim yapmaz
 3. **Parolalar ve ACL:** `admin`, `healthcheck` ve `config/apps`'teki uygulamalar için parola üretir, `config/users.acl`'i yazar
 4. **İzinler:** `data/` 999:999 0700; `users.acl`, `healthcheck_password`, `redis.key` kurulum kullanıcısı:999 (container yalnızca okur)
 5. **Başlatma:** `docker compose up -d`, `healthy` bekleme (en fazla ~90 sn), `ACL LOAD`
@@ -92,9 +96,14 @@ cp .env.example .env
 
 ```
 tls/ca.crt      → sertifikayı imzalayan CA (zincir)
-tls/redis.crt   → SAN listesinde sunucu IP'si / DNS adı olmalı
+tls/redis.crt   → SAN listesinde istemcilerin bağlanacağı DNS adı (veya IP) olmalı
 tls/redis.key
 ```
+
+- Sertifikada sunucu IP'si olmak zorunda değildir; yalnızca DNS adı (örn. `*.kurum.local` wildcard)
+  yeterlidir. `init.sh` sertifikadaki adları yazar; istemciler IP ile değil bu adla bağlanmalıdır
+  (aksi halde istemci `hostname mismatch` hatası verir).
+- Buradaki sertifika `new-project.sh` ile kurulan projelerle de paylaşılır (bkz. "Proje başına ayrı Redis").
 
 ## Uygulama kullanıcıları
 
@@ -201,8 +210,55 @@ girmez, main-redis'in kaldırılması/sıfırlanması projeleri etkilemez. Başk
 - `REDIS_IMAGE` / `REDIS_BIND_IP` bu dizinin `.env`'inden alınır; ortam değişkeni ile de verilebilir.
   Projeye özel sertifika: `TLS_DIR=/yol ./new-project.sh ...` (`ca.crt`, `redis.crt`, `redis.key` kopyalanır).
   DNS adı: `REDIS_TLS_EXTRA_SAN=DNS:redis-etkinlik.kurum.local ./new-project.sh ...`
-- Sonrası normal kurulumdur: `cd ../redis-etkinlik && ./app.sh ...`, `./init.sh`. Firewall kuralı
-  yeni port için ayrıca eklenir (bkz. "Firewall").
+- Terminal olmadan (CI, ssh komutu) çalıştırılıyorsa ve `.env`'de IP yoksa `REDIS_BIND_IP=<ip>` verilmelidir.
+- Firewall kuralı her yeni port için ayrıca eklenir (bkz. "Firewall").
+
+Oluşan proje dizini (paylaşılan TLS ile):
+
+```
+redis-etkinlik/
+├── init.sh, app.sh, bin/   → main-redis'ten kopya (kurulum anındaki sürüm)
+├── docker-compose.yml
+├── .env                    → port, bellek, COMPOSE_PROJECT_NAME=etkinlik-redis
+├── config/                 → redis.conf (maxmemory projeye göre), users.acl, apps
+├── secrets/                → admin, healthcheck, etkinlik parolaları (0700)
+├── tls -> /app/main-redis/tls  (mutlak yol symlink)
+└── data/
+```
+
+`pki/` yalnızca proje kendi CA'sını ürettiğinde (main-redis'te sertifika yoksa) oluşur.
+`.env.example`, `.gitignore` gibi şablon dosyaları kopyalanmaz.
+
+### Port
+
+Her proje ayrı bir Redis olduğu için **her projeye ayrı port** gerekir (aynı IP'de bir portu tek
+süreç dinleyebilir). Aynı projeye bağlanan birden fazla uygulama ise aynı portu paylaşır; her biri
+kendi kullanıcısını alır: `cd ../redis-etkinlik && ./app.sh add rapor`.
+
+### Proje yönetimi
+
+Kurulumdan sonra proje kendi dizininden yönetilir:
+
+```sh
+cd ../redis-etkinlik
+./app.sh list | stats | add <isim> | rotate <isim> | remove <isim>
+./init.sh                     # tekrar çalıştırılabilir; eksikleri tamamlar
+```
+
+- **Yarım kalan kurulum:** script dizini silmez ve devam komutunu yazar
+  (`cd ../redis-etkinlik && ./init.sh && ./app.sh add etkinlik`). Aynı komutla yeniden
+  `new-project.sh` çalıştırmak "zaten var" diye durur; bu bilinçlidir.
+- **Script güncellemeleri** mevcut projelere kendiliğinden geçmez; projeler kurulum anındaki
+  `init.sh` / `app.sh` / `bin/` kopyasıyla çalışır.
+- **Projeyi kaldırma** (VERİ ve parolalar silinir; önce `data/`'yı kontrol edin):
+
+  ```sh
+  cd ../redis-etkinlik && docker compose down && cd ..
+  docker run --rm --user 0:0 -v "$PWD:/w" --entrypoint rm "$(grep ^REDIS_IMAGE= redis-etkinlik/.env | cut -d= -f2)" -rf /w/redis-etkinlik
+  ```
+
+  `data/` 999 sahipli olduğu için normal `rm -rf` ile silinmez; docker üzerinden silinir.
+  Paylaşılan `tls/` symlink olduğu için main-redis'in sertifikaları etkilenmez.
 
 `redis.conf` değiştirildiğinde `docker compose restart redis` gerekir; `.env` veya
 `docker-compose.yml` değiştirildiğinde `./init.sh` container'ı yeniden oluşturur.
@@ -277,7 +333,19 @@ docker run --rm -v "$PWD/tls:/t" --entrypoint rm "$(grep ^REDIS_IMAGE= .env | cu
 docker compose restart redis
 ```
 
-`pki/ca.key` sunucudan kaldırıldıysa önce geri koyun.
+`pki/ca.key` sunucudan kaldırıldıysa önce geri koyun. Kurumsal sertifikada yeni `redis.crt` /
+`redis.key` (ve gerekirse `ca.crt`) dosyalarını `tls/` altına koyun, `./init.sh` (izinleri
+container'ın okuyacağı şekilde düzeltir ve zinciri doğrular) ve `docker compose restart redis`.
+
+**Projeler sertifikayı paylaşıyorsa** yenilemeden sonra her proje de yeniden başlatılmalıdır
+(Redis sertifikayı yalnızca açılışta okur):
+
+```sh
+for d in ../redis-*/; do (cd "$d" && docker compose restart redis); done
+```
+
+Yenileme sırasında (dosyalar silinmişken) bir projede `./init.sh` çalıştırılırsa "paylaşılan TLS eksik"
+diyerek durur; main-redis'in CA'sının yerine yenisini üretmez.
 
 ### Kaldırma / sıfırdan kurulum
 
@@ -291,6 +359,10 @@ docker run --rm --network none -v "$PWD:/w" -w /w --entrypoint sh "$(grep ^REDIS
 ```
 
 Uygulama listesini korumak için `config/apps`'i silmeyin; `init.sh` kullanıcıları yeni parolalarla yeniden oluşturur.
+
+> **Dikkat:** Bu komut `tls/` altındaki sertifikaları da siler. `new-project.sh` ile kurulmuş ve
+> sertifikayı paylaşan projeler (`tls -> /app/main-redis/tls`) bir sonraki restart'ta açılamaz.
+> Projeler varsa `tls/*.crt tls/*.key`'i silmeden bırakın.
 
 ## Sorun giderme
 
@@ -309,6 +381,14 @@ Uygulama listesini korumak için `config/apps`'i silmeyin; `init.sh` kullanıcı
 | İstemcide `Protocol error: invalid bulk length` | Değer 64 MB sınırını aşıyor (`proto-max-bulk-len`). |
 | Bağlantılar beklenmedik kopuyor | `./app.sh stats` → `Kapatılan bağlantı` artıyorsa büyük yanıtlar `maxmemory-clients` sınırını aşıyor. |
 | `Silinen key (evicted)` artıyor | Bellek yetmiyor: TTL'leri kısaltın, `maxmemory`'yi artırın veya yoğun uygulamayı ayırın. |
+| `kurumsal sertifika, IP içermiyor` (OK) | Hata değil: istemciler sertifikadaki DNS adıyla bağlanmalı. |
+| `host'ta uid/gid 999 kullanımda` | Bkz. "Güvenlik notları" → uid/gid 999. |
+| `new-project.sh`: `... zaten var; üzerine yazılmaz` | Hedef dizin mevcut. Yarım kalmış kurulumsa dizinde `./init.sh && ./app.sh add <proje>`. |
+| `new-project.sh`: `compose projesi zaten var` | Aynı adla bir proje başka dizinde kurulu; farklı ad seçin. |
+| `new-project.sh`: `port ... kullanımda` / `bir container'a atanmış` | Başka port seçin (`docker ps` ile kullanılanlara bakın). |
+| `new-project.sh`: `RAM yetersiz` | Tüm container limitleri + yeni limit + 2 GB > fiziksel RAM. Daha küçük `maxmemory` verin veya RAM'i artırın. |
+| `new-project.sh`: `REDIS_BIND_IP belirsiz` | Terminal yok ve IP bilinmiyor: `REDIS_BIND_IP=<ip> ./new-project.sh ...` |
+| `paylaşılan TLS (...) eksik` | main-redis'in `tls/`'i boş (yenileme yarıda). Sertifikayı orada tamamlayıp tekrar çalıştırın. |
 
 ## Notlar
 
@@ -354,7 +434,15 @@ sudo iptables -I DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEP
 - **Veri:** `data/` 0700; AOF/RDB şifresiz tutulur. Cache'e hassas veri yazılıyorsa diski ve yedekleri buna göre koruyun.
 - **Ağ:** 6379'a yalnızca uygulama sunucularından / LB'den izin verin. Docker'ın açtığı portlar
   ufw/firewalld INPUT kurallarını **atlar**; kural `DOCKER-USER` zincirine yazılmalıdır (bkz. "Firewall").
-- **docker grubu** root yetkisine eşdeğerdir; bu sunucuda docker grubundaki herkes parolalara ve veriye erişebilir.
+- **docker grubu** root yetkisine eşdeğerdir; bu sunucuda docker grubundaki herkes parolalara ve veriye erişebilir
+  (`new-project.sh` ile kurulan tüm projeler dahil).
+- **uid/gid 999:** Container 999:999 ile çalışır; `redis.key`, `healthcheck_password` ve `users.acl`
+  grup 999'a okunur, `data/` uid 999'a aittir. Host'ta bu uid/gid'e sahip bir kullanıcı/grup varsa
+  (`getent passwd 999; getent group 999`) onun üyeleri bu dosyaları okuyabilir; `init.sh` uyarır.
+  Bu durumda o kullanıcıya/gruba kimsenin eklenmediğinden emin olun.
+- **Projeler:** her projenin parolaları ve ACL'i ayrıdır; bir projenin parolası diğerinde geçmez.
+  Paylaşılan TLS'te tüm projeler aynı `redis.key`'i kullanır (anahtar tek yerde durur). Proje kendi
+  CA'sını ürettiyse `redis-<proje>/pki/ca.key` için de yukarıdaki CA anahtarı notu geçerlidir.
 
 ## Load balancer arkasında çalıştırma
 
